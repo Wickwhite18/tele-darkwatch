@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     discovery_threshold: float = 0.08  # keyword score to accept a new channel
     health_prom_file: str = ""    # optional path for Prometheus text snapshot
 
+    # v0.6 — SOAR, NLP triage & async collectors
+    soar_webhook_url: str = ""    # SIEM/SOAR incident endpoint (Slack/Teams/Splunk HEC)
+    nlp_triage: bool = True       # drop scam/ad chatter before indexing
+    nlp_drop_threshold: float = 0.5
+    telegram_api_id: int = 0      # my.telegram.org credentials (userbot mode)
+    telegram_api_hash: str = ""
+
     @property
     def channels(self) -> list[str]:
         return [c.strip() for c in self.telegram_channels.split(",") if c.strip()]

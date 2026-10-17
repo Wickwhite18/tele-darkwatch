@@ -121,6 +121,41 @@ the image on `main`. A `Makefile` provides shortcuts (`make install`,
   dispatch is persisted to an `events` table (`darkwatch events` to inspect).
 - **Schema migrations** — opening an older database upgrades it in place
   (e.g. adds `alerts.metadata`); a `meta` key/value table tracks versions.
+- **Leak analysis (v0.4)** — `entities.py` extracts emails, credentials, API
+  keys and crypto wallets via tuned regexes; `leak_parser.py` unpacks
+  infostealer archives **in memory** (`io.BytesIO`) with magic-byte guards
+  that drop executables before they touch disk; `cookies.py` de-serializes
+  Netscape/JSON cookie logs and flags unexpired enterprise sessions;
+  `watchlist.py` scores exposure against your corporate domains;
+  `sanitize.py` masks PII at the storage boundary (GDPR/CCPA);
+  `session_check.py` performs read-only liveness pings for leaked tokens;
+  `channel_discovery.py` recursively harvests new `t.me` links from chatter;
+  `health.py` exposes Prometheus-format metrics and deadman checks.
+- **Anti-friction & hardening (v0.5)** — `session_pool.py` rotates Telegram
+  accounts with per-minute rate caps and quarantine; `proxy_rotator.py`
+  cycles residential/SOCKS endpoints; `fingerprint.py` mimics browser TLS/UA
+  profiles; `dedup.py` catches re-packaged leaks with SHA-256 + fuzzy hashes;
+  `queue.py` is a durable SQLite-backed producer/consumer work queue
+  (Kafka-shaped interface without the ops burden); `ocr.py` and `yara_scan.py`
+  are optional-dependency adapters that no-op cleanly when
+  `pytesseract`/`yara-python` are absent.
+- **Resolution & response (v0.6)** — `graph.py` builds an entity co-occurrence
+  graph over stored messages: `cluster()` grafts personal <-> corporate
+  identities across unrelated breaches and `risk_score()` computes a
+  blast-radius score; `soar.py` runs incident playbooks with **dynamic
+  severity scoring** (live enterprise session => P0, expired => downgraded),
+  persists tickets, and posts SIEM/SOC webhooks (`DW_SOAR_WEBHOOK_URL`);
+  `nlp_classify.py` labels chatter offline (credential dump / ransomware
+  victim / malware source / scam-ad) and drops high-confidence noise before
+  ingestion; `collectors/telegram_userbot.py` (Telethon, optional `[telegram]`
+  extra) polls private channels through the session pool with randomized
+  organic pacing; `collectors/darkweb_async.py` crawls onion sites
+  concurrently over Tor via aiohttp with an optional Playwright fallback.
+
+New CLI commands (v0.6): `graph`, `risk`, `soar-run`, `tickets`, `classify`,
+`collect-userbot`, `crawl-async`. Install heavy integrations on demand:
+`pip install -e ".[telegram]"`, `".[darkweb]"`, `".[playwright]"`, `".[ocr]"`,
+`".[yara]"` — the core suite stays fully offline and CI-fast.
 
 ## Development
 

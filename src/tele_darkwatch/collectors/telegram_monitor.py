@@ -25,6 +25,12 @@ def strip_html(text: str) -> str:
     return _TAG_RE.sub("", text).strip()
 
 
+def _passes_triage(content: str) -> bool:
+    """NLP noise demodulation: drop high-confidence scam/ad chatter."""
+    from tele_darkwatch.nlp_classify import classify, should_index
+    return should_index(classify(content))
+
+
 class TelegramMonitor(BaseCollector):
     """Polls public Telegram channels exposed through ``https://t/s/<name>``."""
 
@@ -34,9 +40,11 @@ class TelegramMonitor(BaseCollector):
         channels: list[str],
         client: Optional[httpx.Client] = None,
         timeout: float = 15.0,
+        triage: bool = True,
     ) -> None:
         super().__init__(store)
         self.channels = [c.lstrip("@") for c in channels]
+        self._triage = triage
         self._client = client or httpx.Client(
             headers={"User-Agent": "tele-darkwatch/0.1"}, timeout=timeout
         )
@@ -52,9 +60,13 @@ class TelegramMonitor(BaseCollector):
         messages: list[Message] = []
         for channel in self.channels:
             try:
-                messages.extend(self.fetch_channel(channel))
+                fetched = self.fetch_channel(channel)
             except Exception:  # network / parse errors should not kill the loop
                 continue
+            for msg in fetched:
+                if self._triage and not _passes_triage(msg.content):
+                    continue
+                messages.append(msg)
         return messages
 
     # ------------------------------------------------------------- internal

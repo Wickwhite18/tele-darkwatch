@@ -151,6 +151,31 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("sessions", help="Telegram session-pool status")
     p.add_argument("--add", default=None, metavar="SESSION_FILE", help="Register a .session file")
 
+    # ---- v0.6: graph resolution / SOAR / NLP triage -----------------------
+    p = sub.add_parser("graph", help="Entity co-occurrence cluster around an identity")
+    p.add_argument("identity")
+    p.add_argument("--hops", type=int, default=2)
+
+    p = sub.add_parser("risk", help="Graph-based blast-radius risk score for an identity")
+    p.add_argument("identity")
+
+    p = sub.add_parser("soar-run", help="Execute SOAR playbooks over unprocessed alerts")
+    p.add_argument("--webhook", default=None, help="Override DW_SOAR_WEBHOOK_URL")
+
+    sub.add_parser("tickets", help="List incident tickets opened by the SOAR engine")
+
+    p = sub.add_parser("classify", help="NLP-triage a text (label + scores)")
+    p.add_argument("text")
+
+    p = sub.add_parser("collect-userbot", help="Telethon userbot collection (optional dep)")
+    p.add_argument("--api-id", type=int, default=None)
+    p.add_argument("--api-hash", default=None)
+    p.add_argument("--channels", nargs="*", default=None)
+
+    p = sub.add_parser("crawl-async", help="Concurrent aiohttp-over-Tor crawl (optional dep)")
+    p.add_argument("--urls", nargs="*", default=None)
+    p.add_argument("--tor-proxy", default=None, help="host:port SOCKS5 (default 127.0.0.1:9050)")
+
     sub.add_parser("stats", help="Show storage statistics")
     return parser
 
@@ -446,6 +471,65 @@ def main(argv: list[str] | None = None) -> int:
             if args.add:
                 pool.add_session(args.add, max_per_minute=settings.session_rate_per_min)
             print(json.dumps(pool.status(), indent=2))
+
+        elif args.command == "graph":
+            from tele_darkwatch.graph import build_graph
+            g = build_graph(store)
+            print(json.dumps(g.cluster(args.identity, max_hops=args.hops), indent=2))
+
+        elif args.command == "risk":
+            from tele_darkwatch.graph import build_graph
+            g = build_graph(store)
+            print(json.dumps(g.risk_score(args.identity), indent=2))
+
+        elif args.command == "soar-run":
+            from tele_darkwatch.soar import SOAREngine, process_pending_alerts
+            if args.webhook is not None:
+                settings.soar_webhook_url = args.webhook
+            results = process_pending_alerts(store, settings)
+            for r in results:
+                print(f"[{r['severity']}] {r['alert']} -> ticket {r['ticket']}"
+                      f" (webhook delivered: {r['delivered']})")
+            print(f"{len(results)} playbook run(s).")
+
+        elif args.command == "tickets":
+            from tele_darkwatch.soar import SOAREngine
+            tickets = SOAREngine(store).list_tickets()
+            print(json.dumps(tickets, indent=2))
+
+        elif args.command == "classify":
+            from tele_darkwatch.nlp_classify import classify, should_index
+            res = classify(args.text)
+            print(json.dumps({"label": res.label, "scores": res.scores,
+                              "index": should_index(res, settings.nlp_drop_threshold)},
+                             indent=2))
+
+        elif args.command == "collect-userbot":
+            from pathlib import Path as _P
+            from tele_darkwatch.collectors.telegram_userbot import collect_blocking
+            api_id = args.api_id or settings.telegram_api_id
+            api_hash = args.api_hash or settings.telegram_api_hash
+            channels = args.channels or settings.channels
+            sessions = sorted(str(p) for p in _P(settings.session_dir).glob("*.session"))
+            if not (api_id and api_hash and sessions and channels):
+                print("Need api_id/api_hash, *.session files in DW_SESSION_DIR,"
+                      " and channels (--channels or DW_TELEGRAM_CHANNELS).")
+                return 1
+            msgs = collect_blocking(api_id=api_id, api_hash=api_hash,
+                                    sessions=sessions, channels=channels)
+            new = store.add_messages(msgs)
+            print(f"Fetched {len(msgs)} message(s); stored {new} new.")
+
+        elif args.command == "crawl-async":
+            from tele_darkwatch.collectors.darkweb_async import crawl_blocking
+            urls = args.urls or settings.urls
+            if not urls:
+                print("No URLs given (--urls or DW_DARKWEB_URLS).")
+                return 1
+            proxy = (args.tor_proxy or settings.tor_proxy).removeprefix("socks5h://")
+            msgs = crawl_blocking(urls, socks_proxy=proxy)
+            new = store.add_messages(msgs)
+            print(f"Crawled {len(urls)} onion URL(s); stored {new} new message(s).")
 
         elif args.command == "stats":
             info = {

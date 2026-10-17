@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tele-darkwatch"
-version = "0.4.0"
+version = "0.6.0"
 description = "Telegram and dark-web monitoring and search project with collectors, storage, and alerts."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -18,6 +18,11 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+telegram = ["telethon>=1.34"]          # userbot collector (private/restricted channels)
+darkweb = ["aiohttp>=3.9", "aiohttp-socks>=0.9"]  # async Tor crawler
+playwright = ["playwright>=1.44"]      # JS-rendered onion sites / fingerprint gates
+ocr = ["pytesseract>=0.3", "opencv-python-headless>=4.9"]
+yara = ["yara-python>=4.5"]
 
 [project.scripts]
 darkwatch = "tele_darkwatch.cli:main"
