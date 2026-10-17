@@ -1,0 +1,21 @@
+services:
+  darkwatch:
+    build: .
+    restart: unless-stopped
+    environment:
+      DW_TELEGRAM_CHANNELS: dcg345,bellingcat
+      DW_DARKWEB_URLS: ""            # add http://<onion>.onion/... URLs here
+      DW_TOR_PROXY: socks5h://tor:9050
+      DW_ALERT_COOLDOWN: "300"
+      DW_RETENTION_DAYS: "90"
+      DW_WEBHOOK_URL: ""             # optional Slack-compatible webhook
+    volumes:
+      - ./data:/data                 # database + rules.json live here
+    depends_on:
+      - tor
+
+  tor:
+    image: goldy/tor-router:latest
+    restart: unless-stopped
+    # Or run the bundled Tor in the darkwatch image instead by removing this
+    # service and unsetting DW_TOR_PROXY override above.

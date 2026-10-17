@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     rules_path: str = "rules.json"
     webhook_url: str = ""  # optional Slack-compatible alert webhook
     poll_interval: int = 300  # seconds between collection cycles
+    log_level: str = "INFO"
+    log_file: str = ""  # optional log file path (in addition to stderr)
+    alert_cooldown: int = 300  # seconds between repeat notifications per rule/channel
+    retention_days: int = 0  # 0 disables automatic pruning in the daemon loop
 
     @property
     def channels(self) -> list[str]:

@@ -7,6 +7,9 @@ Usage examples::
     darkwatch search "drone strike" --channel dcg345
     darkwatch alerts --rules rules.json
     darkwatch notify
+    darkwatch export --format csv --output messages.csv
+    darkwatch prune --older-than-days 30
+    darkwatch daemon
     darkwatch stats
 """
 from __future__ import annotations
@@ -14,14 +17,17 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import asdict
 from pathlib import Path
 
 from tele_darkwatch.alerts.engine import AlertEngine
 from tele_darkwatch.alerts.notifiers import WebhookNotifier, dispatch_pending
+from tele_darkwatch.alerts.rate_limiter import RateLimiter
 from tele_darkwatch.collectors.darkweb_monitor import DarkWebMonitor
 from tele_darkwatch.collectors.telegram_monitor import TelegramMonitor
 from tele_darkwatch.config import Settings
+from tele_darkwatch.export import export_messages
+from tele_darkwatch.logging_setup import configure_logging, get_logger
+from tele_darkwatch.retention import prune, vacuum
 from tele_darkwatch.search.engine import SearchEngine
 from tele_darkwatch.storage.message_store import MessageStore
 
@@ -29,6 +35,7 @@ from tele_darkwatch.storage.message_store import MessageStore
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="darkwatch", description=__doc__)
     parser.add_argument("--db", default=None, help="SQLite database path")
+    parser.add_argument("--log-level", default=None, help="DEBUG/INFO/WARNING/ERROR")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("collect", help="Poll Telegram channels and store messages")
@@ -49,6 +56,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("notify", help="Dispatch pending alerts to notifiers")
 
+    p = sub.add_parser("export", help="Export stored messages (json|csv|ndjson)")
+    p.add_argument("--format", choices=["json", "csv", "ndjson"], default="json")
+    p.add_argument("--channel", default=None)
+    p.add_argument("--limit", type=int, default=10000)
+    p.add_argument("--output", default=None, help="Write to file instead of stdout")
+
+    p = sub.add_parser("prune", help="Delete messages older than N days")
+    p.add_argument("--older-than-days", type=float, default=30.0)
+    p.add_argument("--include-alerts", action="store_true",
+                   help="Also delete alerts older than the cutoff")
+    p.add_argument("--vacuum", action="store_true", help="Reclaim disk space after pruning")
+
+    p = sub.add_parser("daemon", help="Run continuous collect/alert/notify loop")
+    p.add_argument("--interval", type=int, default=None, help="Seconds between cycles")
+
     sub.add_parser("stats", help="Show storage statistics")
     return parser
 
@@ -56,6 +78,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     settings = Settings()
+    if args.log_level:
+        settings.log_level = args.log_level
+    configure_logging(settings.log_level, settings.log_file or None)
+    log = get_logger("cli")
     db_path = args.db or settings.db_path
 
     with MessageStore(db_path) as store:
@@ -94,8 +120,36 @@ def main(argv: list[str] | None = None) -> int:
             notifiers = []
             if settings.webhook_url:
                 notifiers.append(WebhookNotifier(settings.webhook_url))
-            sent = dispatch_pending(store, notifiers or None)
+            limiter = RateLimiter(cooldown=float(settings.alert_cooldown))
+            sent = dispatch_pending(store, notifiers or None, limiter)
             print(f"Dispatched {sent} alert(s).")
+
+        elif args.command == "export":
+            messages = store.recent(limit=args.limit, channel=args.channel)
+            data = export_messages(messages, fmt=args.format)
+            if args.output:
+                Path(args.output).write_text(data, encoding="utf-8")
+                print(f"Exported {len(messages)} message(s) to {args.output}")
+            else:
+                print(data)
+
+        elif args.command == "prune":
+            removed = prune(
+                store,
+                older_than_days=args.older_than_days,
+                keep_alerts=not args.include_alerts,
+            )
+            if args.vacuum:
+                vacuum(store)
+            print(json.dumps(removed, indent=2))
+
+        elif args.command == "daemon":
+            from tele_darkwatch.daemon import Daemon
+
+            if args.interval:
+                settings.poll_interval = args.interval
+            log.info("starting daemon on %s", db_path)
+            Daemon(settings, store=store).run_forever()
 
         elif args.command == "stats":
             info = {

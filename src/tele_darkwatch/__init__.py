@@ -2,30 +2,41 @@
 from tele_darkwatch.alerts.engine import AlertEngine
 from tele_darkwatch.alerts.notifiers import (
     ConsoleNotifier,
+    EmailNotifier,
     WebhookNotifier,
     dispatch_pending,
 )
+from tele_darkwatch.alerts.rate_limiter import RateLimiter
 from tele_darkwatch.collectors.darkweb_monitor import DarkWebMonitor
 from tele_darkwatch.collectors.telegram_monitor import TelegramMonitor
 from tele_darkwatch.config import Settings
+from tele_darkwatch.daemon import Daemon
+from tele_darkwatch.export import export_messages
 from tele_darkwatch.models import Alert, MatchRule, Message, SourceType
+from tele_darkwatch.retention import prune, vacuum
 from tele_darkwatch.search.engine import SearchEngine
 from tele_darkwatch.storage.message_store import MessageStore
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 __all__ = [
     "Alert",
     "AlertEngine",
     "ConsoleNotifier",
+    "Daemon",
     "DarkWebMonitor",
+    "EmailNotifier",
     "MatchRule",
     "Message",
     "MessageStore",
+    "RateLimiter",
     "SearchEngine",
     "Settings",
     "SourceType",
     "TelegramMonitor",
     "WebhookNotifier",
     "dispatch_pending",
+    "export_messages",
+    "prune",
+    "vacuum",
 ]

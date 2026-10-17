@@ -1,7 +1,9 @@
-"""Alert notifiers — console by default, webhook optional."""
+"""Alert notifiers — console by default, webhook/email optional."""
 from __future__ import annotations
 
+import smtplib
 import sys
+from email.message import EmailMessage
 from typing import Optional
 
 import httpx
@@ -18,6 +20,47 @@ class ConsoleNotifier:
             f"content={alert.message_content[:120]!r}",
             file=sys.stderr,
         )
+
+
+class EmailNotifier:
+    """Sends alerts via SMTP.
+
+    ``use_tls`` selects STARTTLS (port 587); otherwise implicit TLS (port 465)
+    is used. Credentials should come from environment/settings, never hardcoded.
+    """
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        sender: str,
+        recipients: list[str],
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+        use_tls: bool = True,
+    ) -> None:
+        self.host = host
+        self.port = port
+        self.sender = sender
+        self.recipients = list(recipients)
+        self.username = username
+        self.password = password
+        self.use_tls = use_tls
+
+    def notify(self, alert: Alert) -> None:
+        msg = EmailMessage()
+        msg["Subject"] = f"[darkwatch] {alert.rule} on {alert.channel}"
+        msg["From"] = self.sender
+        msg["To"] = ", ".join(self.recipients)
+        msg.set_content(alert.message_content)
+
+        cls = smtplib.SMTP_SSL if not self.use_tls else smtplib.SMTP
+        with cls(self.host, self.port, timeout=15) as smtp:
+            if self.use_tls:
+                smtp.starttls()
+            if self.username:
+                smtp.login(self.username, self.password or "")
+            smtp.send_message(msg)
 
 
 class WebhookNotifier:
@@ -40,17 +83,30 @@ class WebhookNotifier:
 def dispatch_pending(
     store: MessageStore,
     notifiers: Optional[list] = None,
+    rate_limiter=None,
 ) -> int:
-    """Send every pending alert through the notifiers; returns count sent."""
+    """Send every pending alert through the notifiers; returns count sent.
+
+    When a :class:`~tele_darkwatch.alerts.rate_limiter.RateLimiter` is given,
+    alerts whose ``rule|channel`` key is still in cooldown are left pending
+    (not marked as notified) so they can be retried later.
+    """
     notifiers = notifiers or [ConsoleNotifier()]
     pending = store.pending_alerts()
     sent = 0
     for alert in pending:
+        if rate_limiter is not None:
+            key = f"{alert.rule}|{alert.channel}"
+            if not rate_limiter.allow(key):
+                continue
+        delivered = False
         for notifier in notifiers:
             try:
                 notifier.notify(alert)
+                delivered = True
             except Exception:
                 continue
-        store.mark_alert_notified(alert.rule, alert.channel)
-        sent += 1
+        if delivered:
+            store.mark_alert_notified(alert.rule, alert.channel)
+            sent += 1
     return sent
