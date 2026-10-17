@@ -45,7 +45,7 @@ from tele_darkwatch.search.engine import SearchEngine
 from tele_darkwatch.storage.event_log import EventLog
 from tele_darkwatch.storage.message_store import MessageStore
 
-__version__ = "0.5.0"
+__version__ = "0.7.0"
 
 __all__ = [
     "BrowserProfile",
