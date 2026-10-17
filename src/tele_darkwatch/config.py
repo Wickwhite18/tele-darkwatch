@@ -40,6 +40,15 @@ class Settings(BaseSettings):
 
     # Enterprise watchlist & compliance (v0.4)
     corporate_domains: str = ""   # comma-separated owned domains (e.g. acme.com)
+    # v0.5 — anti-friction / evasion / hardening
+    proxy_pool: str = ""            # comma-separated residential/SOCKS proxies
+    proxy_pool_file: str = ""       # or one proxy URL per line
+    session_dir: str = "sessions"   # directory with *.session Telegram files
+    session_rate_per_min: int = 30  # max requests per account per minute
+    jitter_min: float = 5.0         # organic delay range between fetches (s)
+    jitter_max: float = 15.0
+    ocr_enabled: bool = False       # route media through tesseract if installed
+    yara_rules_path: str = ""       # directory of .yar rules for log scanning
     discovery_enabled: bool = False  # auto channel-sourcing in the daemon loop
     discovery_threshold: float = 0.08  # keyword score to accept a new channel
     health_prom_file: str = ""    # optional path for Prometheus text snapshot
@@ -55,3 +64,4 @@ class Settings(BaseSettings):
     @property
     def protect_domains(self) -> list[str]:
         return [d.strip().lower() for d in self.corporate_domains.split(",") if d.strip()]
+

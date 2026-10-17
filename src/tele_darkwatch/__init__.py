@@ -18,6 +18,14 @@ from tele_darkwatch.channel_discovery import (
     classify_text,
     extract_channel_names,
 )
+from tele_darkwatch.dedup import FileDeduplicator, sha256_of
+from tele_darkwatch.fingerprint import BrowserProfile, FingerprintRotator
+from tele_darkwatch.magic_guard import FileVerdict, is_safe_text_archive_member
+from tele_darkwatch.ocr import available as ocr_available
+from tele_darkwatch.proxy_rotator import ProxyRotator
+from tele_darkwatch.queue import WorkQueue
+from tele_darkwatch.session_pool import SessionPool
+from tele_darkwatch.yara_scan import YaraScanner, ensure_default_rules
 from tele_darkwatch.collectors.darkweb_monitor import DarkWebMonitor
 from tele_darkwatch.cookies import Cookie, parse_any as parse_cookies
 from tele_darkwatch.entities import Entity, EntityType, extract_all
@@ -37,9 +45,21 @@ from tele_darkwatch.search.engine import SearchEngine
 from tele_darkwatch.storage.event_log import EventLog
 from tele_darkwatch.storage.message_store import MessageStore
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = [
+    "BrowserProfile",
+    "FileDeduplicator",
+    "FileVerdict",
+    "FingerprintRotator",
+    "ProxyRotator",
+    "SessionPool",
+    "WorkQueue",
+    "YaraScanner",
+    "ensure_default_rules",
+    "is_safe_text_archive_member",
+    "ocr_available",
+    "sha256_of",
     "Alert",
     "ChannelDiscovery",
     "ChannelStatus",

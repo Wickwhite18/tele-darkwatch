@@ -96,6 +96,14 @@ class MessageStore:
             ).fetchone()
         return row["value"] if row else None
 
+    def meta_keys(self, prefix: str = "") -> list[str]:
+        """All meta keys starting with *prefix* (for namespaced indexes)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT key FROM meta WHERE key LIKE ?", (prefix + "%",)
+            ).fetchall()
+        return [r["key"] for r in rows]
+
     # ------------------------------------------------------------------ write
     def add_message(self, message: Message) -> Optional[int]:
         """Insert a message; returns its row id or ``None`` if it was a duplicate."""

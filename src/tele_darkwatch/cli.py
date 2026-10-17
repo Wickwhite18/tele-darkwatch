@@ -139,12 +139,59 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--category", default=None)
     p.add_argument("--limit", type=int, default=50)
 
+    p = sub.add_parser("dedup-check", help="Hash-check a leak file against history (SHA-256 + fuzzy)")
+    p.add_argument("file", help="Path to archive/combo list")
+    p.add_argument("--register", action="store_true", help="Record the file in the dedup index")
+
+    p = sub.add_parser("queue", help="Inspect or drain the durable work queue")
+    p.add_argument("--drain", default=None, metavar="QUEUE", help="Process pending jobs in QUEUE")
+    p.add_argument("--publish", nargs=2, metavar=("QUEUE", "JSON"), help="Publish a job")
+    p.add_argument("--stats", action="store_true", help="Show queue statistics")
+
+    p = sub.add_parser("sessions", help="Telegram session-pool status")
+    p.add_argument("--add", default=None, metavar="SESSION_FILE", help="Register a .session file")
+
     sub.add_parser("stats", help="Show storage statistics")
     return parser
 
 
+def _extract_global_flags(parser, argv):
+    """Pull --db/--log-level out of *argv* wherever they appear.
+
+    Returns (remaining_argv, overrides_dict). Handles both
+    `darkwatch --db x sub ...` and `darkwatch sub ... --db x`.
+    """
+    if argv is None:
+        argv = sys.argv[1:]
+    remaining: list[str] = []
+    overrides: dict[str, str] = {}
+    i = 0
+    while i < len(argv):
+        tok = argv[i]
+        if tok in ("--db", "--log-level") and i + 1 < len(argv):
+            key = "db" if tok == "--db" else "log_level"
+            overrides[key] = argv[i + 1]
+            i += 2
+            continue
+        if tok.startswith("--db=") or tok.startswith("--log-level="):
+            flag, _, val = tok.partition("=")
+            key = "db" if flag == "--db" else "log_level"
+            overrides[key] = val
+            i += 1
+            continue
+        remaining.append(tok)
+        i += 1
+    return remaining, overrides
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    # Global flags may be supplied after the subcommand (e.g. `queue --publish ... --db x`);
+    # split them out so argparse doesn't reject them as unrecognized.
+    argv, global_overrides = _extract_global_flags(parser, argv)
+    args = parser.parse_args(argv)
+    for key, value in global_overrides.items():
+        setattr(args, key, value)
     settings = Settings()
     if args.log_level:
         settings.log_level = args.log_level
@@ -362,6 +409,43 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "events":
             events = store.events.recent(limit=args.limit, category=args.category)
             print(json.dumps(events, indent=2))
+
+        elif args.command == "dedup-check":
+            from pathlib import Path as _P
+            from tele_darkwatch.dedup import FileDeduplicator
+            data = _P(args.file).read_bytes()
+            dd = FileDeduplicator(store)
+            verdict = dd.check(data)
+            if args.register:
+                sha = dd.register(data, source=args.file)
+                verdict["registered"] = sha
+            print(json.dumps(verdict, indent=2))
+
+        elif args.command == "queue":
+            from pathlib import Path as _P
+            from tele_darkwatch.queue import WorkQueue
+            q = WorkQueue(str(_P(db_path).with_name("queue.db")))
+            if args.publish:
+                jid = q.publish(args.publish[0], json.loads(args.publish[1]))
+                print(f"published job {jid} to {args.publish[0]}")
+            elif args.drain:
+                def _handler(payload):  # demo consumer: log the job
+                    log.info("queue job: %s", payload)
+                n = q.work(args.drain, _handler)
+                print(f"processed {n} job(s) from {args.drain}")
+            else:
+                print(json.dumps(q.stats(), indent=2))
+            q.close()
+
+        elif args.command == "sessions":
+            from pathlib import Path as _P
+            from tele_darkwatch.session_pool import SessionPool
+            pool = SessionPool(_P(settings.session_dir),
+                               max_per_minute=settings.session_rate_per_min,
+                               jitter=(settings.jitter_min, settings.jitter_max))
+            if args.add:
+                pool.add_session(args.add, max_per_minute=settings.session_rate_per_min)
+            print(json.dumps(pool.status(), indent=2))
 
         elif args.command == "stats":
             info = {
