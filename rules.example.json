@@ -1,0 +1,8 @@
+{
+  "rules": [
+    { "pattern": "missile", "name": "kinetic-strike" },
+    { "pattern": "exploit", "name": "cyber-exploit" },
+    { "pattern": "leak", "name": "data-leak" },
+    { "pattern": "sanction", "name": "sanctions" }
+  ]
+}
