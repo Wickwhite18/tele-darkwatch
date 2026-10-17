@@ -1,0 +1,9 @@
+{
+  "rules": [
+    { "name": "cve", "pattern": "(?P<cve>CVE-\\d{4}-\\d{4,7})", "severity": 3 },
+    { "name": "onion_address", "pattern": "(?P<onion>[a-z2-7]{16,59}\\.onion)", "severity": 2 },
+    { "name": "ipv4", "pattern": "(?P<ip>\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b)", "severity": 1 },
+    { "name": "email", "pattern": "(?P<email>[\\w.+-]+@[\\w-]+\\.[\\w.-]+)", "severity": 1 },
+    { "name": "bitcoin_address", "pattern": "(?P<btc>\\b[13][a-km-zA-HJ-NP-Z1-9]{25,34}\\b|\\bbc1[a-z0-9]{27,68}\\b)", "severity": 3 }
+  ]
+}

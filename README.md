@@ -17,12 +17,14 @@ src/tele_darkwatch/
 │   ├── base.py                # BaseCollector interface
 │   ├── telegram_monitor.py    # Public Telegram channels via t/s RSS export
 │   └── darkweb_monitor.py     # .onion scraping over a Tor SOCKS5 proxy
-├── storage/
-│   └── message_store.py       # Thread-safe SQLite store with dedup
 ├── search/
 │   └── engine.py              # FTS5 full-text search (LIKE fallback)
+├── storage/
+│   ├── message_store.py       # Thread-safe SQLite store with dedup + migrations
+│   └── event_log.py           # Persistent audit log of pipeline activity
 └── alerts/
     ├── engine.py              # Keyword rules -> persisted alerts
+    ├── regex_engine.py        # Regex IOC rules (CVE/onion/IP/email/BTC) + severity
     ├── notifiers.py           # Console / webhook / email dispatch
     └── rate_limiter.py        # Cooldown suppression for repeat alerts
 ```
@@ -51,8 +53,18 @@ darkwatch search "drone strike" --channel dcg345
 cp rules.example.json rules.json
 darkwatch alerts --rules rules.json
 
-# Send pending alerts to console (and DW_WEBHOOK_URL if set)
+# Send pending alerts to console (and DW_WEBHOOK_URL / SMTP email if configured)
 darkwatch notify
+
+# Manually insert an item into the archive (dedup + keyword rules applied)
+darkwatch add "new CVE-2025-1234 exploit published" --channel analyst-note
+
+# Regex IOC scan — extracts CVEs, .onion addresses, IPs, emails, BTC wallets
+# into alert metadata (custom patterns via regex_rules.example.json / DW_REGEX_RULES_PATH)
+darkwatch ioc-scan
+
+# Audit trail of daemon cycles and dispatches
+darkwatch events --limit 20
 
 # Export the archive (json | csv | ndjson), stdout or file
 darkwatch export --format csv --output messages.csv
@@ -99,7 +111,16 @@ the image on `main`. A `Makefile` provides shortcuts (`make install`,
 - **Export** (`export.py`) — JSON / CSV / NDJSON serialization of stored
   messages for feeding downstream tools.
 - **Notifiers** — console, Slack-compatible webhook, and SMTP email
-  (`EmailNotifier`, STARTTLS or implicit TLS).
+  (`EmailNotifier`, STARTTLS or implicit TLS; enabled via `DW_SMTP_HOST` +
+  `DW_EMAIL_TO`).
+- **Regex IOC engine** (`alerts/regex_engine.py`) — named-capture patterns for
+  CVEs, .onion addresses, IPv4, emails and BTC wallets with per-rule severity
+  (1–5); extracted indicators are stored in the alert's `metadata`. Custom
+  pattern files use the shape of `regex_rules.example.json`.
+- **Audit log** (`storage/event_log.py`) — every daemon cycle and notification
+  dispatch is persisted to an `events` table (`darkwatch events` to inspect).
+- **Schema migrations** — opening an older database upgrades it in place
+  (e.g. adds `alerts.metadata`); a `meta` key/value table tracks versions.
 
 ## Development
 

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from tele_darkwatch.models import Alert, Message, SourceType
+from tele_darkwatch.storage.event_log import EventLog
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
@@ -28,7 +29,13 @@ CREATE TABLE IF NOT EXISTS alerts (
     channel TEXT NOT NULL,
     message_content TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    notified INTEGER NOT NULL DEFAULT 0
+    notified INTEGER NOT NULL DEFAULT 0,
+    metadata TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 """
 
@@ -49,8 +56,43 @@ class MessageStore:
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         with self._lock:
+            self._migrate_raw()
             self._conn.executescript(_SCHEMA)
+            self._migrate()
             self._conn.commit()
+        self.events = EventLog(self._conn, self._lock)
+
+    def _migrate_raw(self) -> None:
+        """Pre-schema fix: add columns that ``_SCHEMA`` references on old DBs."""
+        cols = {
+            r["name"]
+            for r in self._conn.execute("PRAGMA table_info(alerts)").fetchall()
+        }
+        if cols and "metadata" not in cols:
+            self._conn.execute(
+                "ALTER TABLE alerts ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'"
+            )
+
+    def _migrate(self) -> None:
+        """Bring an existing database up to the current schema (idempotent)."""
+        pass
+
+    # ------------------------------------------------------------------- meta
+    def set_meta(self, key: str, value: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO meta (key, value) VALUES (?, ?)"
+                " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, value),
+            )
+            self._conn.commit()
+
+    def get_meta(self, key: str) -> Optional[str]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT value FROM meta WHERE key = ?", (key,)
+            ).fetchone()
+        return row["value"] if row else None
 
     # ------------------------------------------------------------------ write
     def add_message(self, message: Message) -> Optional[int]:
@@ -114,22 +156,27 @@ class MessageStore:
 
     # ----------------------------------------------------------------- alerts
     def save_alert(self, alert: Alert) -> int:
+        import json
+
         with self._lock:
             cur = self._conn.execute(
-                "INSERT INTO alerts (rule, channel, message_content, created_at, notified)"
-                " VALUES (?, ?, ?, ?, ?)",
+                "INSERT INTO alerts (rule, channel, message_content, created_at,"
+                " notified, metadata) VALUES (?, ?, ?, ?, ?, ?)",
                 (
                     alert.rule,
                     alert.channel,
                     alert.message_content,
                     alert.created_at.isoformat(),
                     int(alert.notified),
+                    json.dumps(alert.metadata),
                 ),
             )
             self._conn.commit()
             return cur.lastrowid
 
     def pending_alerts(self, limit: int = 100) -> list[Alert]:
+        import json
+
         with self._lock:
             rows = self._conn.execute(
                 "SELECT * FROM alerts WHERE notified = 0 ORDER BY created_at LIMIT ?",
@@ -142,6 +189,7 @@ class MessageStore:
                 message_content=r["message_content"],
                 created_at=_parse_dt(r["created_at"]),
                 notified=bool(r["notified"]),
+                metadata=json.loads(r["metadata"]) if "metadata" in r.keys() else {},
             )
             for r in rows
         ]

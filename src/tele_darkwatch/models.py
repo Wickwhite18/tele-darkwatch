@@ -60,3 +60,4 @@ class Alert(BaseModel):
     message_content: str
     created_at: datetime = Field(default_factory=_utcnow)
     notified: bool = False
+    metadata: dict = Field(default_factory=dict)

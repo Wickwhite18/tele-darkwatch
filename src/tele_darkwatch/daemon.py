@@ -85,6 +85,7 @@ class Daemon:
             removed = prune(self.store, older_than_days=self.settings.retention_days)
             stats["pruned"] = removed["messages"]
 
+        self.store.events.record("cycle", **stats)
         log.info("cycle complete: %s", stats)
         return stats
 

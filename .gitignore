@@ -221,3 +221,7 @@ __marimo__/
 /data/*
 !/data/.gitkeep
 messages.csv
+darkwatch.db*
+*.log
+.coverage
+htmlcov/

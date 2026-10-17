@@ -6,9 +6,12 @@ Usage examples::
     darkwatch collect-darkweb --urls http://exampleonionx.onion
     darkwatch search "drone strike" --channel dcg345
     darkwatch alerts --rules rules.json
+    darkwatch ioc-scan            # regex IOC extraction (CVEs, onion addr…)
     darkwatch notify
     darkwatch export --format csv --output messages.csv
     darkwatch prune --older-than-days 30
+    darkwatch events             # audit log of pipeline activity
+    darkwatch add "text" --channel manual
     darkwatch daemon
     darkwatch stats
 """
@@ -17,16 +20,24 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from tele_darkwatch.alerts.engine import AlertEngine
-from tele_darkwatch.alerts.notifiers import WebhookNotifier, dispatch_pending
+from tele_darkwatch.alerts.notifiers import (
+    ConsoleNotifier,
+    EmailNotifier,
+    WebhookNotifier,
+    dispatch_pending,
+)
 from tele_darkwatch.alerts.rate_limiter import RateLimiter
+from tele_darkwatch.alerts.regex_engine import RegexAlertEngine, default_regex_rules
 from tele_darkwatch.collectors.darkweb_monitor import DarkWebMonitor
 from tele_darkwatch.collectors.telegram_monitor import TelegramMonitor
 from tele_darkwatch.config import Settings
 from tele_darkwatch.export import export_messages
 from tele_darkwatch.logging_setup import configure_logging, get_logger
+from tele_darkwatch.models import Message, SourceType
 from tele_darkwatch.retention import prune, vacuum
 from tele_darkwatch.search.engine import SearchEngine
 from tele_darkwatch.storage.message_store import MessageStore
@@ -54,7 +65,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rules", default=None, help="Path to rules JSON file")
     p.add_argument("--limit", type=int, default=200)
 
+    p = sub.add_parser(
+        "ioc-scan",
+        help="Regex IOC scan (CVEs, onion addresses, IPs, emails, BTC)",
+    )
+    p.add_argument("--rules", default=None,
+                   help="Path to RegexRule JSON file (default: built-in patterns)")
+    p.add_argument("--limit", type=int, default=200)
+
     sub.add_parser("notify", help="Dispatch pending alerts to notifiers")
+
+    p = sub.add_parser("add", help="Manually insert a message into the archive")
+    p.add_argument("text")
+    p.add_argument("--channel", default="manual")
 
     p = sub.add_parser("export", help="Export stored messages (json|csv|ndjson)")
     p.add_argument("--format", choices=["json", "csv", "ndjson"], default="json")
@@ -70,6 +93,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("daemon", help="Run continuous collect/alert/notify loop")
     p.add_argument("--interval", type=int, default=None, help="Seconds between cycles")
+
+    p = sub.add_parser("events", help="Show the audit/event log")
+    p.add_argument("--category", default=None)
+    p.add_argument("--limit", type=int, default=50)
 
     sub.add_parser("stats", help="Show storage statistics")
     return parser
@@ -116,13 +143,46 @@ def main(argv: list[str] | None = None) -> int:
             found = engine.scan_recent(limit=args.limit)
             print(f"{len(found)} alert(s) raised.")
 
+        elif args.command == "ioc-scan":
+            regex_engine = _regex_engine(settings, store, rules_path=args.rules)
+            found = regex_engine.scan_recent(limit=args.limit)
+            print(json.dumps(
+                [a.model_dump(mode="json") for a in found], indent=2))
+            print(f"{len(found)} IOC alert(s) raised.")
+
         elif args.command == "notify":
-            notifiers = []
+            notifiers = [ConsoleNotifier()]
             if settings.webhook_url:
                 notifiers.append(WebhookNotifier(settings.webhook_url))
+            if settings.smtp_host and settings.email_to:
+                notifiers.append(EmailNotifier(
+                    host=settings.smtp_host,
+                    port=settings.smtp_port,
+                    sender=settings.email_sender,
+                    recipients=[e.strip() for e in settings.email_to.split(",") if e.strip()],
+                    username=settings.smtp_user or None,
+                    password=settings.smtp_password or None,
+                    use_tls=settings.smtp_starttls,
+                ))
             limiter = RateLimiter(cooldown=float(settings.alert_cooldown))
-            sent = dispatch_pending(store, notifiers or None, limiter)
+            sent = dispatch_pending(store, notifiers, limiter)
+            store.events.record("notify", dispatched=sent)
             print(f"Dispatched {sent} alert(s).")
+
+        elif args.command == "add":
+            message = Message(
+                content=args.text,
+                channel=args.channel,
+                source_type=SourceType.MANUAL,
+                timestamp=datetime.now(timezone.utc),
+            )
+            row_id = store.add_message(message)
+            if row_id is None:
+                print("Message already exists (duplicate suppressed).")
+            else:
+                engine = _engine(settings, store)
+                alerts = engine.check_message(message.model_copy(update={"id": row_id}))
+                print(f"Stored message id={row_id}, {len(alerts)} alert(s) raised.")
 
         elif args.command == "export":
             messages = store.recent(limit=args.limit, channel=args.channel)
@@ -151,11 +211,16 @@ def main(argv: list[str] | None = None) -> int:
             log.info("starting daemon on %s", db_path)
             Daemon(settings, store=store).run_forever()
 
+        elif args.command == "events":
+            events = store.events.recent(limit=args.limit, category=args.category)
+            print(json.dumps(events, indent=2))
+
         elif args.command == "stats":
             info = {
                 "messages": store.count(),
                 "channels": store.channels(),
                 "pending_alerts": len(store.pending_alerts()),
+                "events": store.events.count(),
             }
             print(json.dumps(info, indent=2))
 
@@ -167,6 +232,14 @@ def _engine(settings: Settings, store: MessageStore, rules_path: str | None = No
     if Path(path).exists():
         return AlertEngine.from_file(store, path)
     return AlertEngine(store)
+
+
+def _regex_engine(settings: Settings, store: MessageStore, rules_path: str | None = None):
+    """Regex IOC engine — loads custom patterns from file, else built-ins."""
+    path = rules_path or settings.regex_rules_path
+    if path and Path(path).exists():
+        return RegexAlertEngine.from_file(store, path)
+    return RegexAlertEngine(store, default_regex_rules())
 
 
 if __name__ == "__main__":
