@@ -32,23 +32,24 @@ class Daemon:
 
     def __init__(
         self,
-        settings: Settings,
+        settings: Optional[Settings] = None,
         store: Optional[MessageStore] = None,
         engine: Optional[AlertEngine] = None,
+        notifiers: Optional[list] = None,
     ) -> None:
-        self.settings = settings
+        self.settings = settings or Settings()
         self._owns_store = store is None
-        self.store = store or MessageStore(settings.db_path)
+        self.store = store or MessageStore(self.settings.db_path)
         if engine is not None:
             self.engine = engine
-        elif Path(settings.rules_path).exists():
-            self.engine = AlertEngine.from_file(self.store, settings.rules_path)
+        elif Path(self.settings.rules_path).exists():
+            self.engine = AlertEngine.from_file(self.store, self.settings.rules_path)
         else:
             self.engine = AlertEngine(self.store)
-        self.notifiers = []
-        if settings.webhook_url:
-            self.notifiers.append(WebhookNotifier(settings.webhook_url))
-        self.rate_limiter = RateLimiter(cooldown=float(settings.alert_cooldown))
+        self.notifiers = [] if notifiers is None else list(notifiers)
+        if notifiers is None and self.settings.webhook_url:
+            self.notifiers.append(WebhookNotifier(self.settings.webhook_url))
+        self.rate_limiter = RateLimiter(cooldown=float(self.settings.alert_cooldown))
         self._stop = threading.Event()
 
     # ------------------------------------------------------------------ cycle
@@ -76,6 +77,31 @@ class Daemon:
         # Always scan recent messages; repeat notifications are suppressed by
         # the rate limiter inside dispatch_pending().
         stats["alerts"] = len(self.engine.scan_recent(limit=max(new_msgs, 50)))
+
+        # Extraction pipeline: entities, dedup, watchlist, heartbeats.
+        from tele_darkwatch.pipeline import process_new_messages
+
+        pipe = process_new_messages(
+            self.store, corporate_domains=self.settings.protect_domains or None)
+        stats["pipeline_processed"] = pipe["processed"]
+        stats["pipeline_alerts"] = pipe["alerts"]
+
+        # Channel sourcing loop (opt-in): discover & triage new t.me links.
+        if self.settings.discovery_enabled:
+            from tele_darkwatch.channel_discovery import ChannelDiscovery
+
+            disc = ChannelDiscovery(
+                self.store, threshold=self.settings.discovery_threshold)
+            stats["discovered"] = disc.discover_from_store(limit=max(new_msgs, 50))
+            if disc.pending():
+                stats["verified"] = disc.verify_pending(max_candidates=3)
+
+        # Health: expose a Prometheus snapshot when configured.
+        if self.settings.health_prom_file:
+            from tele_darkwatch.health import HealthMonitor
+
+            HealthMonitor(self.store).write_promfile(
+                self.settings.health_prom_file)
 
         stats["notified"] = dispatch_pending(
             self.store, self.notifiers or None, self.rate_limiter

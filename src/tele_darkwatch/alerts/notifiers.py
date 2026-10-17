@@ -107,6 +107,7 @@ def dispatch_pending(
             except Exception:
                 continue
         if delivered:
-            store.mark_alert_notified(alert.rule, alert.channel)
+            store.mark_alert_notified(alert.rule, alert.channel,
+                                      alert_id=getattr(alert, "id", None))
             sent += 1
     return sent

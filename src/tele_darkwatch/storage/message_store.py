@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from tele_darkwatch.models import Alert, Message, SourceType
+from tele_darkwatch.storage.entity_store import EntityStore
 from tele_darkwatch.storage.event_log import EventLog
 
 _SCHEMA = """
@@ -61,6 +62,7 @@ class MessageStore:
             self._migrate()
             self._conn.commit()
         self.events = EventLog(self._conn, self._lock)
+        self.entities = EntityStore(self._conn, self._lock)
 
     def _migrate_raw(self) -> None:
         """Pre-schema fix: add columns that ``_SCHEMA`` references on old DBs."""
@@ -143,6 +145,36 @@ class MessageStore:
             rows = self._conn.execute(query, params).fetchall()
         return [self._row_to_message(r) for r in rows]
 
+    def messages_since(self, last_id: int, limit: int = 500) -> list[Message]:
+        """Messages with row id greater than ``last_id`` (pipeline watermark)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM messages WHERE id > ? ORDER BY id LIMIT ?",
+                (last_id, limit),
+            ).fetchall()
+        return [self._row_to_message(r) for r in rows]
+
+    def update_message_content(self, message_id: int, content: str) -> None:
+        """Rewrite a stored message's content (used by sanitization)."""
+        import hashlib
+
+        new_key = hashlib.sha256(
+            f"{self._channel_of(message_id)}|{content.strip().lower()}".encode()
+        ).hexdigest()
+        with self._lock:
+            self._conn.execute(
+                "UPDATE messages SET content = ?, dedup_key = ? WHERE id = ?",
+                (content, new_key, message_id),
+            )
+            self._conn.commit()
+
+    def _channel_of(self, message_id: int) -> str:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT channel FROM messages WHERE id = ?", (message_id,)
+            ).fetchone()
+        return row["channel"] if row else ""
+
     def count(self) -> int:
         with self._lock:
             return self._conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
@@ -174,6 +206,35 @@ class MessageStore:
             self._conn.commit()
             return cur.lastrowid
 
+    def all_alerts(self, limit: int = 100) -> list[Alert]:
+        """Every stored alert (notified or not), newest first."""
+        import json
+
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM alerts ORDER BY created_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        return [self._row_to_alert(r) for r in rows]
+
+    @staticmethod
+    def _row_to_alert(r) -> Alert:
+        import json
+
+        try:
+            meta = json.loads(r["metadata"]) if r["metadata"] else {}
+        except (ValueError, TypeError):
+            meta = {}
+        return Alert(
+            id=r["id"],
+            rule=r["rule"],
+            channel=r["channel"],
+            message_content=r["message_content"],
+            created_at=datetime.fromisoformat(r["created_at"]),
+            notified=bool(r["notified"]),
+            metadata=meta,
+        )
+
     def pending_alerts(self, limit: int = 100) -> list[Alert]:
         import json
 
@@ -184,6 +245,7 @@ class MessageStore:
             ).fetchall()
         return [
             Alert(
+                id=r["id"],
                 rule=r["rule"],
                 channel=r["channel"],
                 message_content=r["message_content"],
@@ -194,12 +256,44 @@ class MessageStore:
             for r in rows
         ]
 
-    def mark_alert_notified(self, rule: str, channel: str) -> None:
+    def alert_exists(self, rule: str, channel: str, needle: str) -> bool:
+        """True if an alert for rule/channel already mentions *needle*."""
         with self._lock:
-            self._conn.execute(
-                "UPDATE alerts SET notified = 1 WHERE rule = ? AND channel = ?",
-                (rule, channel),
-            )
+            row = self._conn.execute(
+                "SELECT 1 FROM alerts WHERE rule = ? AND channel = ?"
+                " AND message_content LIKE ? LIMIT 1",
+                (rule, channel, f"%{needle}%"),
+            ).fetchone()
+        return row is not None
+
+    def search_like(self, substring: str, limit: int = 50) -> list[Message]:
+        """Case-insensitive substring scan over stored messages."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM messages WHERE content LIKE ?"
+                " ORDER BY id DESC LIMIT ?",
+                (f"%{substring}%", limit),
+            ).fetchall()
+        return [self._row_to_message(r) for r in rows]
+
+    def mark_alert_notified(self, rule: str, channel: str,
+                            alert_id: Optional[int] = None) -> None:
+        """Mark an alert as notified.
+
+        When ``alert_id`` is given only that row is updated; otherwise every
+        pending alert for the ``(rule, channel)`` pair is marked (legacy
+        behaviour used by callers without row ids).
+        """
+        with self._lock:
+            if alert_id is not None:
+                self._conn.execute(
+                    "UPDATE alerts SET notified = 1 WHERE id = ?", (alert_id,)
+                )
+            else:
+                self._conn.execute(
+                    "UPDATE alerts SET notified = 1 WHERE rule = ? AND channel = ?",
+                    (rule, channel),
+                )
             self._conn.commit()
 
     # ------------------------------------------------------------------ misc

@@ -91,6 +91,47 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Also delete alerts older than the cutoff")
     p.add_argument("--vacuum", action="store_true", help="Reclaim disk space after pruning")
 
+    p = sub.add_parser("pipeline", help="Extract entities from new messages (dedup + watchlist)")
+    p.add_argument("--limit", type=int, default=500)
+    p.add_argument("--no-alerts", action="store_true")
+
+    p = sub.add_parser("entities", help="Search the entity index")
+    p.add_argument("query", nargs="?", default=None)
+    p.add_argument("--type", default=None,
+                   help="email|url|ipv4|btc_address|eth_address|api_key")
+    p.add_argument("--top", action="store_true", help="Show most-repeated entities")
+    p.add_argument("--limit", type=int, default=20)
+
+    p = sub.add_parser("profile", help="Cross-source profile for an identity (entity resolution)")
+    p.add_argument("identity")
+
+    p = sub.add_parser("parse-archive", help="In-memory infostealer archive parse (zip/tar)")
+    p.add_argument("path")
+    p.add_argument("--json", action="store_true", help="Dump full entity list")
+
+    p = sub.add_parser("parse-cookies", help="Parse Netscape/JSON cookie file & triage sessions")
+    p.add_argument("path")
+
+    p = sub.add_parser("discover", help="Scan stored chatter for new t.me channels")
+    p.add_argument("--limit", type=int, default=500)
+
+    p = sub.add_parser("verify-channels", help="Triage pending discovered channels (network)")
+    p.add_argument("--max", type=int, default=10)
+
+    sub.add_parser("channels", help="List discovered channels and their status")
+
+    p = sub.add_parser("sanitize", help="Mask PII (passwords/cards) in stored messages")
+    p.add_argument("--domains", nargs="*", default=None,
+                   help="Corporate domains to keep verbatim (default: DW_CORPORATE_DOMAINS)")
+
+    p = sub.add_parser("check-token", help="Read-only liveness ping for a leaked token")
+    p.add_argument("token")
+
+    p = sub.add_parser("health", help="Pipeline health snapshot / Prometheus text")
+    p.add_argument("--prometheus", action="store_true")
+    p.add_argument("--hours", type=float, default=24.0)
+    p.add_argument("--output", default=None, help="Write metrics to file")
+
     p = sub.add_parser("daemon", help="Run continuous collect/alert/notify loop")
     p.add_argument("--interval", type=int, default=None, help="Seconds between cycles")
 
@@ -203,6 +244,113 @@ def main(argv: list[str] | None = None) -> int:
                 vacuum(store)
             print(json.dumps(removed, indent=2))
 
+        elif args.command == "pipeline":
+            from tele_darkwatch.pipeline import process_new_messages
+
+            result = process_new_messages(
+                store, batch_size=args.limit, raise_alerts=not args.no_alerts,
+                corporate_domains=settings.protect_domains or None)
+            print(json.dumps(result, indent=2))
+
+        elif args.command == "entities":
+            if args.top:
+                rows = store.entities.top(etype=args.type, limit=args.limit)
+            elif args.query:
+                rows = store.entities.search(args.query, etype=args.type,
+                                             limit=args.limit)
+            else:
+                rows = {"counts_by_type": store.entities.counts_by_type(),
+                        "total": store.entities.count()}
+            print(json.dumps(rows, indent=2, default=str))
+
+        elif args.command == "profile":
+            from tele_darkwatch.watchlist import profile_for
+
+            print(json.dumps(profile_for(store, args.identity), indent=2))
+
+        elif args.command == "parse-archive":
+            from tele_darkwatch.leak_parser import parse_file
+
+            report = parse_file(args.path)
+            summary = {
+                "members_seen": report.members_seen,
+                "members_parsed": report.members_parsed,
+                "dropped_executables": report.dropped_executables,
+                "truncated": report.truncated,
+                "credential_lines": report.credential_lines,
+                "entity_counts": report.entity_counts,
+            }
+            if args.json:
+                summary["entities"] = [e.model_dump(mode="json")
+                                       for e in report.entities]
+                new_count = store.entities.record_many(report.entities,
+                                                       channel="archive")
+                summary["new_entities_indexed"] = new_count
+            print(json.dumps(summary, indent=2))
+
+        elif args.command == "parse-cookies":
+            from tele_darkwatch.cookies import parse_any, triage
+
+            cookies = parse_any(Path(args.path).read_text(encoding="utf-8",
+                                                           errors="replace"))
+            print(json.dumps({"parsed": len(cookies), **triage(cookies)},
+                             indent=2))
+
+        elif args.command == "discover":
+            from tele_darkwatch.channel_discovery import ChannelDiscovery
+
+            disc = ChannelDiscovery(store)
+            added = disc.discover_from_store(limit=args.limit)
+            print(f"{added} new channel candidate(s); "
+                  f"{len(disc.pending())} pending total.")
+
+        elif args.command == "verify-channels":
+            from tele_darkwatch.channel_discovery import ChannelDiscovery
+
+            disc = ChannelDiscovery(store, threshold=settings.discovery_threshold)
+            print(json.dumps(disc.verify_pending(max_candidates=args.max),
+                             indent=2))
+
+        elif args.command == "channels":
+            from tele_darkwatch.channel_discovery import ChannelDiscovery
+
+            disc = ChannelDiscovery(store)
+            print(json.dumps([c.model_dump(mode="json")
+                              for c in disc.all_channels], indent=2))
+
+        elif args.command == "sanitize":
+            from tele_darkwatch.sanitize import sanitize_store
+
+            domains = args.domains or settings.protect_domains
+            print(json.dumps(sanitize_store(store, protect_domains=domains),
+                             indent=2))
+
+        elif args.command == "check-token":
+            from tele_darkwatch.session_check import validate_token
+
+            res = validate_token(args.token)
+            print(json.dumps({"provider": res.provider, "status": res.status,
+                              "http_status": res.http_status,
+                              "severity": res.severity}, indent=2))
+
+        elif args.command == "health":
+            from tele_darkwatch.health import HealthMonitor
+
+            monitor = HealthMonitor(store)
+            if args.prometheus:
+                text = monitor.prometheus_text(max_silence_hours=args.hours)
+                if args.output:
+                    Path(args.output).write_text(text, encoding="utf-8")
+                    print(f"Wrote metrics to {args.output}")
+                else:
+                    print(text)
+            else:
+                snap = monitor.snapshot(max_silence_hours=args.hours)
+                if args.output:
+                    Path(args.output).write_text(
+                        json.dumps(snap, indent=2), encoding="utf-8")
+                print(json.dumps(snap, indent=2))
+
         elif args.command == "daemon":
             from tele_darkwatch.daemon import Daemon
 
@@ -220,6 +368,8 @@ def main(argv: list[str] | None = None) -> int:
                 "messages": store.count(),
                 "channels": store.channels(),
                 "pending_alerts": len(store.pending_alerts()),
+                "entities": store.entities.count(),
+                "entity_types": store.entities.counts_by_type(),
                 "events": store.events.count(),
             }
             print(json.dumps(info, indent=2))

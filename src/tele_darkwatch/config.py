@@ -1,6 +1,7 @@
 """Application settings loaded from environment variables / .env file."""
 from __future__ import annotations
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -19,7 +20,8 @@ class Settings(BaseSettings):
     tor_proxy: str = "socks5h://127.0.0.1:9050"
     rules_path: str = "rules.json"
     regex_rules_path: str = ""  # optional JSON file of RegexRule IOC patterns
-    webhook_url: str = ""  # optional Slack-compatible alert webhook
+    webhook_url: str = Field(  # optional Slack-compatible alert webhook
+        default="", validation_alias="DW_ALERT_WEBHOOK_URL")
     poll_interval: int = 300  # seconds between collection cycles
     log_level: str = "INFO"
     log_file: str = ""  # optional log file path (in addition to stderr)
@@ -36,6 +38,12 @@ class Settings(BaseSettings):
     email_sender: str = "darkwatch@localhost"
     email_to: str = ""  # comma-separated recipient addresses
 
+    # Enterprise watchlist & compliance (v0.4)
+    corporate_domains: str = ""   # comma-separated owned domains (e.g. acme.com)
+    discovery_enabled: bool = False  # auto channel-sourcing in the daemon loop
+    discovery_threshold: float = 0.08  # keyword score to accept a new channel
+    health_prom_file: str = ""    # optional path for Prometheus text snapshot
+
     @property
     def channels(self) -> list[str]:
         return [c.strip() for c in self.telegram_channels.split(",") if c.strip()]
@@ -43,3 +51,7 @@ class Settings(BaseSettings):
     @property
     def urls(self) -> list[str]:
         return [u.strip() for u in self.darkweb_urls.split(",") if u.strip()]
+
+    @property
+    def protect_domains(self) -> list[str]:
+        return [d.strip().lower() for d in self.corporate_domains.split(",") if d.strip()]

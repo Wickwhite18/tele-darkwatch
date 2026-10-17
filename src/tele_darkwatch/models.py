@@ -55,6 +55,7 @@ class MatchRule(BaseModel):
 class Alert(BaseModel):
     """A notification emitted when a rule matches a stored message."""
 
+    id: Optional[int] = None
     rule: str
     channel: str
     message_content: str
